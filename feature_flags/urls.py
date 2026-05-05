@@ -17,4 +17,8 @@ urlpatterns = [
     path("experiments/<int:experiment_id>/", views.experiment_detail, name="experiment-detail"),
     path("experiments/<int:experiment_id>/variants/", views.experiment_add_variant, name="experiment-add-variant"),
 
+    # ── Metrics (Phase 5) ─────────────────────────────────────────
+    path("experiments/events/", views.log_event, name="log-event"),
+    path("experiments/<int:experiment_id>/metrics/", views.experiment_metrics, name="experiment-metrics"),
+
 ]

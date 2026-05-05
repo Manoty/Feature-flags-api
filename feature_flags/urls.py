@@ -1,6 +1,3 @@
-# FILE: feature_flags/urls.py
-# UPDATED FILE
-
 from django.urls import path
 from . import views
 

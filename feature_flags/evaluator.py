@@ -81,7 +81,7 @@ def evaluate_flag(flag_name: str, user_id: str) -> dict:
             "user_id": user_id,
         }
 
-    # ── Rule 3: Full rollout shortcut ─────────────────────────────
+    # ── Full rollout shortcut ─────────────────────────────
     if flag_data["rollout_percentage"] >= 100:
         return {
             "enabled": True,

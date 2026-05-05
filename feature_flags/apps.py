@@ -1,5 +1,6 @@
 from django.apps import AppConfig
 
-
 class FeatureFlagsConfig(AppConfig):
-    name = 'feature_flags'
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "feature_flags"
+    verbose_name = "Feature Flags"

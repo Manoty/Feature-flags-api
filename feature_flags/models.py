@@ -4,39 +4,23 @@
 from django.db import models
 
 
-# ─────────────────────────────────────────
-# BASE MODEL
-# Gives every model created_at + updated_at
-# ─────────────────────────────────────────
+# ── Base Model ────────────────────────────────────────────────────
 
 class TimestampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        abstract = True  # never creates its own table
+        abstract = True
 
 
-# ─────────────────────────────────────────
-# FEATURE FLAG
-# The core toggle. Represents one feature.
-# ─────────────────────────────────────────
+# ── Feature Flag ──────────────────────────────────────────────────
 
 class FeatureFlag(TimestampedModel):
-    name = models.SlugField(
-        max_length=100,
-        unique=True,
-        help_text="Unique identifier e.g. 'dark-mode', 'new-checkout'"
-    )
+    name = models.SlugField(max_length=100, unique=True)
     description = models.TextField(blank=True)
-    is_active = models.BooleanField(
-        default=False,
-        help_text="Global kill switch. False = off for everyone."
-    )
-    rollout_percentage = models.PositiveSmallIntegerField(
-        default=100,
-        help_text="0–100. What % of users see this flag when active."
-    )
+    is_active = models.BooleanField(default=False)
+    rollout_percentage = models.PositiveSmallIntegerField(default=100)
 
     def __str__(self):
         return f"{self.name} ({'on' if self.is_active else 'off'})"
@@ -46,18 +30,10 @@ class FeatureFlag(TimestampedModel):
         ordering = ["name"]
 
 
-# ─────────────────────────────────────────
-# USER IDENTIFIER
-# Lightweight user record. No auth needed.
-# external_id comes from your own system.
-# ─────────────────────────────────────────
+# ── User Identifier ───────────────────────────────────────────────
 
 class UserIdentifier(TimestampedModel):
-    external_id = models.CharField(
-        max_length=255,
-        unique=True,
-        help_text="ID from your system: UUID, user_123, hashed email, etc."
-    )
+    external_id = models.CharField(max_length=255, unique=True)
 
     def __str__(self):
         return self.external_id
@@ -66,11 +42,7 @@ class UserIdentifier(TimestampedModel):
         db_table = "user_identifiers"
 
 
-# ─────────────────────────────────────────
-# EXPERIMENT
-# A named A/B test linked to a feature flag.
-# One flag → one experiment.
-# ─────────────────────────────────────────
+# ── Experiment ────────────────────────────────────────────────────
 
 class Experiment(TimestampedModel):
     class Status(models.TextChoices):
@@ -83,7 +55,6 @@ class Experiment(TimestampedModel):
         FeatureFlag,
         on_delete=models.CASCADE,
         related_name="experiment",
-        help_text="Each flag can have at most one experiment."
     )
     name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
@@ -101,12 +72,7 @@ class Experiment(TimestampedModel):
         ordering = ["-created_at"]
 
 
-# ─────────────────────────────────────────
-# VARIANT
-# A bucket inside an experiment.
-# e.g. "control" (weight 50) + "treatment" (weight 50)
-# weight is relative — doesn't need to sum to 100.
-# ─────────────────────────────────────────
+# ── Variant ───────────────────────────────────────────────────────
 
 class Variant(TimestampedModel):
     experiment = models.ForeignKey(
@@ -114,28 +80,18 @@ class Variant(TimestampedModel):
         on_delete=models.CASCADE,
         related_name="variants",
     )
-    name = models.CharField(
-        max_length=100,
-        help_text="e.g. 'control', 'treatment', 'variant-b'"
-    )
-    weight = models.PositiveSmallIntegerField(
-        default=50,
-        help_text="Relative weight for assignment. control=50, treatment=50 → 50/50 split."
-    )
+    name = models.CharField(max_length=100)
+    weight = models.PositiveSmallIntegerField(default=50)
 
     def __str__(self):
         return f"{self.experiment.name} → {self.name}"
 
     class Meta:
         db_table = "variants"
-        unique_together = [("experiment", "name")]  # no duplicate variant names per experiment
+        unique_together = [("experiment", "name")]
 
 
-# ─────────────────────────────────────────
-# ASSIGNMENT
-# Records which variant a user was put in.
-# unique_together ensures one variant per user per experiment.
-# ─────────────────────────────────────────
+# ── Assignment ────────────────────────────────────────────────────
 
 class Assignment(TimestampedModel):
     user = models.ForeignKey(
@@ -159,4 +115,44 @@ class Assignment(TimestampedModel):
 
     class Meta:
         db_table = "assignments"
-        unique_together = [("user", "experiment")]  # DB-enforced: one variant per user per experiment
+        unique_together = [("user", "experiment")]
+
+
+# ── Metric Event ──────────────────────────────────────────────────
+# NEW in Phase 5
+# One row per tracked event (impression or conversion).
+# Raw storage — aggregate on read.
+
+class MetricEvent(TimestampedModel):
+    class EventType(models.TextChoices):
+        IMPRESSION = "impression", "Impression"
+        CONVERSION = "conversion", "Conversion"
+
+    experiment = models.ForeignKey(
+        Experiment,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    variant = models.ForeignKey(
+        Variant,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    user = models.ForeignKey(
+        UserIdentifier,
+        on_delete=models.CASCADE,
+        related_name="events",
+    )
+    event_type = models.CharField(
+        max_length=20,
+        choices=EventType.choices,
+    )
+
+    def __str__(self):
+        return f"{self.user} | {self.event_type} | {self.variant}"
+
+    class Meta:
+        db_table = "metric_events"
+        ordering = ["-created_at"]
+        # Prevent duplicate impressions/conversions per user per variant
+        unique_together = [("experiment", "variant", "user", "event_type")]

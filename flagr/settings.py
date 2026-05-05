@@ -9,10 +9,13 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
-    "django.contrib.contenttypes",
+    "django.contrib.admin",      
     "django.contrib.auth",
-    "rest_framework",       # Django REST Framework
-    "feature_flags",        # our app
+    "django.contrib.contenttypes",
+    "django.contrib.sessions",      
+    "django.contrib.messages",       
+    "rest_framework",
+    "feature_flags",
 ]
 
 MIDDLEWARE = [

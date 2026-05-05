@@ -1,3 +1,7 @@
+# FILE: feature_flags/views.py
+# UPDATED FILE
+
+from django.db.models import Count, Q
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
@@ -10,15 +14,18 @@ from .serializers import (
     ExperimentSerializer,
     VariantSerializer,
     AssignUserSerializer,
+    LogEventSerializer,
 )
-from .models import FeatureFlag, Experiment, Variant
+from .models import (
+    FeatureFlag, Experiment, Variant,
+    UserIdentifier, Assignment, MetricEvent,
+)
 
 
 # ── Health Check ──────────────────────────────────────────────────
 
 @api_view(["GET"])
 def health(request):
-    """GET /api/health/"""
     return Response({
         "status": "ok",
         "service": "flagr",
@@ -30,10 +37,6 @@ def health(request):
 
 @api_view(["GET", "POST"])
 def flag_list(request):
-    """
-    GET  /api/flags/   → list all flags
-    POST /api/flags/   → create a flag
-    """
     if request.method == "GET":
         flags = FeatureFlag.objects.all()
         return Response(FeatureFlagSerializer(flags, many=True).data)
@@ -47,10 +50,6 @@ def flag_list(request):
 
 @api_view(["GET", "PATCH"])
 def flag_detail(request, flag_name):
-    """
-    GET   /api/flags/<flag_name>/  → get one flag
-    PATCH /api/flags/<flag_name>/  → update a flag
-    """
     try:
         flag = FeatureFlag.objects.get(name=flag_name)
     except FeatureFlag.DoesNotExist:
@@ -71,7 +70,6 @@ def flag_detail(request, flag_name):
 
 @api_view(["POST"])
 def evaluate(request):
-    """POST /api/flags/evaluate/"""
     serializer = EvaluateFlagSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -83,14 +81,10 @@ def evaluate(request):
     return Response(result)
 
 
-# ── Experiments (Phase 4, new) ────────────────────────────────────
+# ── Experiments (Phase 4, unchanged) ─────────────────────────────
 
 @api_view(["GET", "POST"])
 def experiment_list(request):
-    """
-    GET  /api/experiments/   → list all experiments
-    POST /api/experiments/   → create an experiment
-    """
     if request.method == "GET":
         experiments = Experiment.objects.prefetch_related("variants").all()
         return Response(ExperimentSerializer(experiments, many=True).data)
@@ -104,10 +98,6 @@ def experiment_list(request):
 
 @api_view(["GET", "PATCH"])
 def experiment_detail(request, experiment_id):
-    """
-    GET   /api/experiments/<id>/   → get one experiment
-    PATCH /api/experiments/<id>/   → update status etc.
-    """
     try:
         experiment = Experiment.objects.prefetch_related("variants").get(
             id=experiment_id
@@ -130,11 +120,6 @@ def experiment_detail(request, experiment_id):
 
 @api_view(["POST"])
 def experiment_add_variant(request, experiment_id):
-    """
-    POST /api/experiments/<id>/variants/
-    Add a variant to an experiment.
-    Body: { "name": "control", "weight": 50 }
-    """
     try:
         experiment = Experiment.objects.get(id=experiment_id)
     except Experiment.DoesNotExist:
@@ -152,11 +137,6 @@ def experiment_add_variant(request, experiment_id):
 
 @api_view(["POST"])
 def experiment_assign(request):
-    """
-    POST /api/experiments/assign/
-    Assign a user to a variant in an experiment.
-    Body: { "experiment_id": 1, "user_id": "user_001" }
-    """
     serializer = AssignUserSerializer(data=request.data)
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -169,4 +149,123 @@ def experiment_assign(request):
     if not result["success"]:
         return Response(result, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response(result, status=status.HTTP_200_OK)
+    return Response(result)
+
+
+# ── Metrics (Phase 5, new) ────────────────────────────────────────
+
+@api_view(["POST"])
+def log_event(request):
+    """
+    POST /api/experiments/events/
+
+    Log an impression or conversion for a user in an experiment.
+    User must already be assigned to a variant — we look it up
+    automatically so the caller doesn't need to pass variant_id.
+
+    Duplicate events (same user + experiment + event_type) are
+    silently ignored — idempotent by design.
+    """
+    serializer = LogEventSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    experiment_id = serializer.validated_data["experiment_id"]
+    user_id = serializer.validated_data["user_id"]
+    event_type = serializer.validated_data["event_type"]
+
+    # Experiment must exist
+    try:
+        experiment = Experiment.objects.get(id=experiment_id)
+    except Experiment.DoesNotExist:
+        return Response(
+            {"error": f"Experiment '{experiment_id}' not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # User must exist and be assigned
+    try:
+        user = UserIdentifier.objects.get(external_id=user_id)
+        assignment = Assignment.objects.select_related("variant").get(
+            user=user,
+            experiment=experiment,
+        )
+    except UserIdentifier.DoesNotExist:
+        return Response(
+            {"error": f"User '{user_id}' has no assignment in this experiment."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    except Assignment.DoesNotExist:
+        return Response(
+            {"error": f"User '{user_id}' has no assignment in this experiment."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # get_or_create = idempotent. Logging same event twice is a no-op.
+    event, created = MetricEvent.objects.get_or_create(
+        experiment=experiment,
+        variant=assignment.variant,
+        user=user,
+        event_type=event_type,
+    )
+
+    return Response({
+        "success": True,
+        "created": created,          # False means it was a duplicate
+        "user_id": user_id,
+        "experiment_id": experiment_id,
+        "variant_name": assignment.variant.name,
+        "event_type": event_type,
+    }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def experiment_metrics(request, experiment_id):
+    """
+    GET /api/experiments/<id>/metrics/
+
+    Returns aggregated impression + conversion counts per variant,
+    plus conversion rate. Single query using annotation.
+    """
+    try:
+        experiment = Experiment.objects.get(id=experiment_id)
+    except Experiment.DoesNotExist:
+        return Response(
+            {"error": f"Experiment '{experiment_id}' not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # One query: get all variants with annotated counts
+    variants = Variant.objects.filter(experiment=experiment).annotate(
+        impressions=Count(
+            "events",
+            filter=Q(events__event_type=MetricEvent.EventType.IMPRESSION)
+        ),
+        conversions=Count(
+            "events",
+            filter=Q(events__event_type=MetricEvent.EventType.CONVERSION)
+        ),
+    )
+
+    results = []
+    for variant in variants:
+        impressions = variant.impressions
+        conversions = variant.conversions
+        conversion_rate = (
+            round(conversions / impressions * 100, 2)
+            if impressions > 0 else 0
+        )
+        results.append({
+            "variant_id": variant.id,
+            "variant_name": variant.name,
+            "impressions": impressions,
+            "conversions": conversions,
+            "conversion_rate_pct": conversion_rate,
+        })
+
+    return Response({
+        "experiment_id": experiment_id,
+        "experiment_name": experiment.name,
+        "status": experiment.status,
+        "variants": results,
+    })

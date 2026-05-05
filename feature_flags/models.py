@@ -1,6 +1,3 @@
-# FILE: feature_flags/models.py
-# UPDATED FILE
-
 from django.db import models
 
 
